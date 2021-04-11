@@ -19,30 +19,17 @@ from tensorflow.keras.layers import Dense
 
 from sklearn.model_selection import train_test_split
 from sklearn.utils import shuffle
-
-plt.style.use('dark_background')
+from sklearn.model_selection import KFold
 
 #---- Data set import and shuffle ----
-df = pd.read_pickle("data/mapped_data_GGD_encoded.pkl")
-df = df[df.rent < 2000]
+df = pd.read_pickle("data/mapped_data.pkl")
+df = df[df.property_type != 4]
 location = df.iloc[:,17::].columns.values.tolist()  # list with all regions
-
-# Remove maximum 10 samples
-maxrent = df.rent.sort_values(ascending=False)
-maxarea = df.area_sqm.sort_values(ascending=False)
-#maxcost = df.additional_costs.sort_values(ascending=False)
-maxdeposit = df.deposit.sort_values(ascending=False)
-
-for i in range(10):
-    df = df[df.rent!=maxrent.iloc[i]]
-    df = df[df.area_sqm!=maxarea.iloc[i]]
-    #df = df[df.additional_costs!=maxcost.iloc[i]]
-    df = df[df.deposit!=maxdeposit.iloc[i]]
 
 comparefeatures = 0   # 1 if we investigate similar inputs
 investigatefeature = location # choose: location, ['area_sqm'], ['furnish'],  ['living'], (['internet'], ['kitchen'])
-testperc = 0.10    # split data, default value
-trainperc = 0.90   # split data, default value
+testperc = 0.05    # split data, default value
+trainperc = 0.05   # split data, default value
 
 # investigate similarity of certain features
 if comparefeatures == 1:
@@ -81,55 +68,150 @@ xTrain, xTest, yTrain, yTest = train_test_split(x, y, test_size=testperc, train_
 xTrain, yTrain = shuffle(xTrain, yTrain)
 xTest, yTest = shuffle(xTest, yTest)
 
+xTest_idx = xTest.index
+plt.style.use('dark_background')
+
+plt.scatter(xTest.index, yTest,alpha=0.6)
+plt.title('Rent of each property')
+plt.xlabel('Properties')
+plt.ylabel('Rent €')
+
 #---- Model ----
 
-# Building model
-init = tf.keras.initializers.HeUniform() #Initializer recommended for ReLu (also try HeUniform)
-act = 'relu' # Actfunc is same in each hidden layer
+# K-fold Cross Validator
+kfold_validation = 1;
 
-model = Sequential()
-model.add(Dense(128, activation=act,kernel_initializer=init))
-model.add(Dense(128, activation=act,kernel_initializer=init))
-model.add(Dense(64, activation=act,kernel_initializer=init))
-model.add(Dense(32, activation=act,kernel_initializer=init))
-model.add(Dense(16, activation=act,kernel_initializer=init))
-model.add(Dense(8, activation=act,kernel_initializer=init))
-model.add(Dense(1, activation='linear')) # Output layer has linear actfunc
+# Results per fold
+mae_per_fold = []
+loss_per_fold = []
 
-# Compiling model
-eta = 0.001 # Default eta for 'adam', we can adjust this
-opt = tf.keras.optimizers.Adam(learning_rate=eta)
-model.compile(optimizer=opt,loss='mae',metrics=['mean_absolute_error'])
+if kfold_validation == 1:
+    folds = 2 #minimaal 2, 5 folds gaf betere performance
+    kf = KFold(n_splits = folds, shuffle = True)
+    
+    Xdf = pd.concat([xTrain,xTest]) # for plotting
+    Ydf = pd.concat([yTrain,yTest]) 
+    
+    X = np.vstack([xTrain,xTest]) # for KFold
+    Y = np.hstack([yTrain,yTest])
+    
+    # Cross validation model evaluation
+    fold_nr = 1
+    for train_idx,test_idx in kf.split(X):
+        xTrain,xTest = X[train_idx],X[test_idx]
+        yTrain,yTest = Y[train_idx],Y[test_idx]
+        
+        xTest_idx = Xdf.index[test_idx] # for plotting
+        
+        # Building model
+        init = tf.keras.initializers.HeUniform() #Initializer recommended for ReLu (also try HeUniform)
+        act = 'relu' # Actfunc is same in each hidden layer
 
-# Fitting model
-eps = 100
-batch = 32 # Default bath size
-valsplit = 0.2 # Fraction of training data to be used as validation data at end of each epoch
+        model = Sequential()
+        model.add(Dense(128, activation=act,kernel_initializer=init))
+        model.add(Dense(128, activation=act,kernel_initializer=init))
+        model.add(Dense(64, activation=act,kernel_initializer=init))
+        model.add(Dense(32, activation=act,kernel_initializer=init))
+        model.add(Dense(16, activation=act,kernel_initializer=init))
+        model.add(Dense(8, activation=act,kernel_initializer=init))
+        model.add(Dense(1, activation='linear')) # Output layer has linear actfunc
 
-fitting = model.fit(xTrain,yTrain,epochs=eps,batch_size=batch,verbose=0,validation_split=valsplit)
-loss = fitting.history['mean_absolute_error']
-lossnorm = [x/max(loss) for x in loss]
+        # Compiling model
+        eta = 0.001 # Default eta for 'adam', we can adjust this
+        opt = tf.keras.optimizers.Adam(learning_rate=eta)
+        model.compile(optimizer=opt,loss='mae',metrics=['mean_absolute_error'])
+        
+        # Printing
+        print(f'Training for fold {fold_nr}:')
+        print()
+        # Fitting model
+        eps = 100
+        batch = 32 # Default bath size
+        valsplit = 0.2 # Fraction of training data to be used as validation data at end of each epoch
+        
+        fitting = model.fit(xTrain,yTrain,epochs=eps,batch_size=batch,verbose=1,validation_split=valsplit)
+        loss = fitting.history['mean_absolute_error']
+        lossnorm = [x/max(loss) for x in loss]
+        
+        # evaluating model
+        error = model.evaluate(xTest,yTest, verbose=0) 
+        print()
+        print('-------------')
+        print(f'Evaluation fold {fold_nr}:  {model.metrics_names[0]} = {error[0]}; {model.metrics_names[1]} = {error[1]*100}%')
+        print()
+        
+        mae_per_fold.append(error[1] * 100)
+        loss_per_fold.append(error[0])
 
-# evaluating model
-error = model.evaluate(xTest,yTest, verbose=0) # Check even welke error dit is, laatste, laagste, gemiddelde???
-print('MAE evaluation: %.4f \n\r RMAE evaluation: %.4f' % (error[0], np.sqrt(error[0])))
+        # Increase fold number
+        fold_nr = fold_nr + 1
+        
+        #  print('MSE evaluation: %.4f \n\r RMSE evaluation: %.4f' % (error[0], np.sqrt(error[0])))
+    # predicting
+    pred = model.predict(xTest)
+    
+    # Average results KFold cross validation
+    print('---------')
+    for i in range(0,len(mae_per_fold)):
+        print()
+        print(f' Fold {i+1} > Loss = {loss_per_fold[i]} - MAE = {mae_per_fold[i]})')
+    print()
+    print('Average results of all folds:')
+    print(f'MAE = {np.mean(mae_per_fold)} (+- {np.std(mae_per_fold)})')
+    print(f'Loss = {np.mean(loss_per_fold)}')
+    
+elif kfold_validation ==0: # dit is gewoon het normale model zonder kfold validation
+    # Building model
+    init = tf.keras.initializers.HeUniform() #Initializer recommended for ReLu (also try HeUniform)
+    act = 'relu' # Actfunc is same in each hidden layer
 
-# predicting
-pred = model.predict(xTest)
+    model = Sequential()
+    model.add(Dense(128, activation=act,kernel_initializer=init))
+    model.add(Dense(128, activation=act,kernel_initializer=init))
+    model.add(Dense(64, activation=act,kernel_initializer=init))
+    model.add(Dense(32, activation=act,kernel_initializer=init))
+    model.add(Dense(16, activation=act,kernel_initializer=init))
+    model.add(Dense(8, activation=act,kernel_initializer=init))
+    model.add(Dense(1, activation='linear')) # Output layer has linear actfunc
 
+    # Compiling model
+    eta = 0.001 # Default eta for 'adam', we can adjust this
+    opt = tf.keras.optimizers.Adam(learning_rate=eta)
+    model.compile(optimizer=opt,loss='mae',metrics=['mean_absolute_error'])
+        
+    # Fitting model
+    eps = 100
+    batch = 32 # Default bath size
+    valsplit = 0.2 # Fraction of training data to be used as validation data at end of each epoch
+    
+    fitting = model.fit(xTrain,yTrain,epochs=eps,batch_size=batch,verbose=1,validation_split=valsplit)
+    loss = fitting.history['mean_absolute_error']
+    lossnorm = [x/max(loss) for x in loss]
+    
+    # evaluating model
+    error = model.evaluate(xTest,yTest, verbose=0) 
+    print()
+    print('------------------')
+    print(f'Evaluation:  {model.metrics_names[0]} = {error[0]}; {model.metrics_names[1]} = {error[1]*100}%')
+    print()
+   
+    # predicting
+    pred = model.predict(xTest)
 
 #---- Comparison predicted and actual rent price ----
 
 # Plots
-fig1, ax = plt.subplots(2)
-fig1.suptitle('MLP for predicting rent prices')
 
-ax[0].scatter(xTest.index,yTest,c='r',s=2,label='True Data', alpha=0.8)
-ax[0].scatter(xTest.index,pred,c='b',s=2,label='Prediction by MLP', alpha=0.8)
+fig1, ax = plt.subplots(2)
+#fig1.patch.set_alpha(0)
+fig1.suptitle('MLP for predicting rent price')
+
+ax[0].scatter(xTest_idx,yTest,c='r',s=2,label='True Data')
+ax[0].scatter(xTest_idx,pred,c='b',s=2,label='Prediction by MLP')
 ax[0].legend(loc="upper right", prop={'size':8})
 ax[0].set_xlabel("Room index")
 ax[0].set_ylabel("Rent price")
-ax[0].set_title("MAE: %.4f, RMAE: %.4f" % (error[0], np.sqrt(error[0])),fontsize=10)
+ax[0].set_title("MAE: %.4f, nr folds: %i" % (error[0], folds),fontsize=10)
 
 ax[1].semilogy(lossnorm, label='Mean Absolute Error',c='r')  #MSE
 ax[1].legend(loc="upper right", prop={'size':8})
@@ -147,7 +229,9 @@ bins = np.arange(-110,120,10)
 
 # Plot histogram
 fig2, ax = plt.subplots(1)
-y, x, _ = ax.hist(np.clip(np.ravel(perc), bins[0], bins[-1]), bins, color='r')
+#fig2.patch.set_alpha(0)
+
+y, x, _ = ax.hist(np.clip(np.ravel(perc), bins[0], bins[-1]), bins)
 for rect in ax.patches:
     height = rect.get_height()
     plt.annotate(f'{int(height)}', xy=(rect.get_x()+rect.get_width()/2, height),
@@ -155,7 +239,7 @@ for rect in ax.patches:
 labels = ['-100+%', '-100%', '-90%', '-80%', '-70%', '-60%', '-50%', '-40%', '-30%', '-20%', '-10%', '0%', '10%', '20%', '30%', '40%', '50%', '60%', '70%', '80%', '90%', '100%', '100+%']
 ax.set_xlabel("Percentage of deviation")
 ax.set_ylabel("Number of houses")
-ax.set_title("Deviation in predicted price",fontsize=10)
+ax.set_title("Deviation in predicted price, nr folds: %i" % (folds),fontsize=10)
 ax.set_xticks(bins)
 ax.set_xticklabels(labels, rotation='vertical')
 ax.text(50, y.max()/2, " Min: %.2f%% \n Max: %.2f%% \n Mean: %.2f%% \n Std: %.2f%% \n Median: %.2f%%" % (min(perc), max(perc), np.average(perc), np.std(perc), np.median(perc)))
@@ -167,13 +251,16 @@ plt.show()
 cutoffhigh = np.average(perc) + np.std(perc)
 cutofflow = np.average(perc) - np.std(perc)
 perc = perc.reshape(1, len(perc))[0].tolist()
-outliers = [x for x in perc if x > 100]
+outliers = [x for x in perc if x > cutoffhigh or x < cutofflow]
 
 # These outliers are in perc, having the same index as pred/yTest/xTest
 ind = [perc.index(x) for x in outliers]
-features_outlier = xTest.iloc[ind,:].transpose()
 
-features_outlier.to_pickle('data/features_outliers.pkl')
+if kfold_validation == 0:
+    features_outlier = xTest.iloc[ind,:].transpose()
+elif kfold_validation == 1:
+    features_outlier = xTest[ind,:]
+
 
 
 
